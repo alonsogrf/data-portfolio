@@ -71,61 +71,57 @@ approvals as (
     group by 1
 ),
 
--- HERE
-installation_change_dates as (
-    /*The CSI process includes two checklists: System Change and Installation Change. However, a single lead
-    may have multiple, incomplete CSI processes.
-    To link correctly the checklist, we follow this rule: the Installation Change should be linked to the 
-    most recent System Change checklist created before the Installation Change.
-    */
-    select distinct on (installation_change_stage.stage_id)
-        installation_change_stage.stage_id as instal_change_checklist_id,
-        formatting(installation_change_stage.created_at) as instal_change_creation_date,
-        newProduct_leads.sales_stage_id,
-        newProduct_leads.sales_creation_date,
-        min(approvals.doc_approved_date) filter (where docs.doc_type = 'welcomeCall') as csi_wc_date,
-        min(approvals.doc_approved_date) filter (where docs.doc_type = 'installationFunctionDemo') as csi_com_date,
-        min(approvals.doc_approved_date) filter (where docs.doc_type = 'interconnection') as csi_ix_date,
-        min(approvals.doc_approved_date) filter (where docs.name = 'After WC CSI TD') as csi_td_date
-    from newProduct_leads
-        inner join {{ source('source','stages') }} as installation_change_checklist
-            on installation_change_stage.macro_id = newProduct_leads.macro_id 
-            and installation_change_stage.type = 'installationChange'
-            and newProduct_leads.sales_creation_date < formatting(installation_change_stage.created_at)
-        left join {{ source('source','checklist_item') }} as checklist_item
-            on docs.stage_id = installation_change_stage.stage_id 
-        left join approvals on approvals.doc_id = docs.doc_id
-    where docs.doc_type in ('welcomeCall', 'interconnection', 'installationFunctionDemo', 'custom')
-    group by 1, 2, 3, 4
-    order by installation_change_stage.stage_id, newProduct_leads.sales_creation_date desc
-),
-
-/* Due to multiple changes on CSI process. The Welcome Call, Commissioning, and IX checklist_items
-could be contained either on a systemChange or an installationChange checklist or even in both of them
-causing some duplication.
-We’ve decided to get the date of the first approval for each type of item from both checklists. And then 
-prioritize the dates from installationChange when available.
-*/
-system_change_dates as (
+-- Sales Milestones: Looking for the 1° and 2° milestone. Exploring for the 3°, 5° and 6° milestones, just in case they were documented in this stage.
+sales_milestones as (
     select
         newProduct_leads.sales_stage_id,
-        --we always expects only 1 sheetsProposalId
-        string_agg(trim(docs.data->>'sheetsProposalId'), ', ') as csi_proposal_id,
-        min(proposal.system_size_watts) as new_size_watts,
-        min(docs.status) filter (where docs.doc_type = 'systemChangeCustomerCallReport') as csi_rsv_current_status,
-        min(approvals.doc_approved_date) filter (where docs.doc_type = 'systemChangeCustomerCallReport') as csi_rsv_date,
-        min(approvals.doc_approved_date) filter (where docs.doc_type = 'subscriptionContract') as csi_app_date,
-        min(approvals.doc_approved_date) filter (where docs.doc_type = 'welcomeCall') as csi_wc_date,
-        min(approvals.doc_approved_date) filter (where docs.doc_type = 'installationFunctionDemo') as csi_com_date,
-        min(approvals.doc_approved_date) filter (where docs.doc_type = 'interconnection') as csi_ix_date,
-        --here we assume the interest is true if the space is empty
+        -- I always expect only 1 ProposalId
+        string_agg(trim(docs.data->>'ProposalId'), ', ') as new_proposal_id,
+        -- Just in case there could be more than 1 proposal, I will get the information of the smallest attributes - restriction made from my manager
+        min(proposal.attributes) as new_attributes,
+        min(docs.status) filter (where docs.doc_type = 'callReport') as new_cReport_current_status,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'callReport') as new_cReport_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'signing') as new_signing_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'schedule') as new_schedule_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'validation') as new_validation_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'completion') as new_completion_date,
+        /*
+        Here I am dealing with incomplete documentation. I assume:
+              a. There is a 100% probability whenever a customer is not interested, the analysts would document the case and mark a 'no' option.
+              b. Whenever we have an interested customer, the team could hop to another part of the process, forgetting about documenting the affirmative interest.
+        That is why whenever there may be an empty space, I will take it as a reafirmation for customer interest.
+        */
         coalesce(docs.data->>'customerInterested' != 'no', true) as csi_interested
     from newProduct_leads
-        inner join {{ source('source','checklist_item') }} as checklist_item on docs.stage_id = newProduct_leads.sales_stage_id
+        inner join {{ source('source','docs') }} as docs on docs.stage_id = newProduct_leads.sales_stage_id
         inner join approvals on approvals.doc_id = docs.doc_id
-        left join {{ source('source','proposal') }} as proposal on proposal.sheets_proposal_id = trim(docs.data->>'sheetsProposalId')
-    where docs.doc_type in ('systemChangeCustomerCallReport', 'subscriptionContract', 'welcomeCall', 'interconnection', 'installationFunctionDemo')
+        left join {{ source('source','proposal') }} as proposal on proposal.sheets_proposal_id = trim(docs.data->>'ProposalId')
+    where docs.doc_type in ('callReport', 'signing', 'schedule', 'validation', 'completion')
     group by 1, 10
+),
+ 
+-- Delivery Milestones: 
+delivery_milestones as (
+    select distinct on (delivery_stage.stage_id)
+        delivery_stage.stage_id as delivery_id,
+        formatting(delivery_stage.created_at) as delivery_creation_date,
+        newProduct_leads.sales_stage_id,
+        newProduct_leads.sales_creation_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'schedule') as new_schedule_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'validation') as new_validation_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'completion') as new_completion_date,
+        min(approvals.doc_approved_date) filter (where docs.name = 'Termination') as new_termination_date
+    from newProduct_leads
+        inner join {{ source('source','stages') }} as installation_change_checklist
+            on delivery_stage.macro_id = newProduct_leads.macro_id 
+            and delivery_stage.type = 'installationChange'
+            and newProduct_leads.sales_creation_date < formatting(delivery_stage.created_at)
+        left join {{ source('source','docs') }} as docs
+            on docs.stage_id = delivery_stage.stage_id 
+        left join approvals on approvals.doc_id = docs.doc_id
+    where docs.doc_type in ('schedule', 'validation', 'completion', 'custom')
+    group by 1, 2, 3, 4
+    order by delivery_stage.stage_id, newProduct_leads.sales_creation_date desc
 ),
 
 system_change_design as (
@@ -133,7 +129,7 @@ system_change_design as (
         newProduct_leads.sales_stage_id,
         round((design.data->>'systemCapacityKW')::numeric*1000,2) as system_size_pdesign
     from newProduct_leads
-        inner join {{ source('source','checklist_item') }} as design
+        inner join {{ source('source','docs') }} as design
             on design.stage_id = newProduct_leads.sales_stage_id 
             and design.doc_type in ('projectDesign')
 ),
@@ -142,7 +138,7 @@ pre_kw as (
     select distinct on (installation_history.project_id)
         installation_history.project_id,
         installation_history.contract_id as prev_contract_id,
-        installation_history.system_size_watts as prev_size_watts
+        installation_history.attributes as prev_size_watts
     from newProduct_leads 
         inner join {{ source('source','installation_history') }} as installation_history 
             on newProduct_leads.project_id = installation_history.project_id
@@ -161,42 +157,42 @@ select distinct on (newProduct_leads.sales_stage_id)
     newProduct_leads.customer_id,
     (container.attrs->>'csi/assigned_to')::bigint as csi_atribute_ee_id,
     newProduct_leads.sales_creation_date,
-    system_change_dates.csi_rsv_date,
-    system_change_dates.csi_app_date,
-    coalesce(installation_change_dates.csi_wc_date, system_change_dates.csi_wc_date) as csi_wc_date,
+    sales_milestones.new_cReport_date,
+    sales_milestones.new_signing_date,
+    coalesce(delivery_milestones.new_schedule_date, sales_milestones.new_schedule_date) as new_schedule_date,
     (mvisit.start_time)::date as csi_inst_date,
-    coalesce(installation_change_dates.csi_com_date, system_change_dates.csi_com_date) as csi_com_date,
-    coalesce(installation_change_dates.csi_ix_date, system_change_dates.csi_ix_date) as csi_ix_date,
+    coalesce(delivery_milestones.new_validation_date, sales_milestones.new_validation_date) as new_validation_date,
+    coalesce(delivery_milestones.new_completion_date, sales_milestones.new_completion_date) as new_completion_date,
     case
-        when not coalesce(system_change_dates.csi_interested, true) 
-        then system_change_dates.csi_rsv_date
+        when not coalesce(sales_milestones.csi_interested, true) 
+        then sales_milestones.new_cReport_date
         else null
     end as csi_not_interested_date,
-    installation_change_dates.csi_td_date,
-    system_change_dates.csi_proposal_id,
+    delivery_milestones.new_termination_date,
+    sales_milestones.new_proposal_id,
     pre_kw.prev_size_watts,
     --Design and proposal system size may have differences between them. We decided to use the design size
     --as the source for measuring the increment since it is what will be physically installed
-    system_change_dates.new_size_watts as contract_new_size_watts,
-    system_change_design.system_size_pdesign as design_new_size_watts,
+    sales_milestones.new_attributes as contract_new_attributes,
+    system_change_design.system_size_pdesign as design_new_attributes,
     system_change_design.system_size_pdesign - pre_kw.prev_size_watts as increment_watts,
     pre_kw.prev_contract_id,
     contract.contract_id as csi_contract_id,
     coalesce(contract.active, false) as csi_contract_active,
-    system_change_dates.csi_rsv_current_status,
-    coalesce(system_change_dates.csi_interested, true) as csi_interested,
-    installation_change_dates.csi_td_date is not null as after_csi_wc_td
+    sales_milestones.new_cReport_current_status,
+    coalesce(sales_milestones.csi_interested, true) as csi_interested,
+    delivery_milestones.new_termination_date is not null as after_csi_wc_td
 from newProduct_leads
-    left join system_change_dates on system_change_dates.sales_stage_id = newProduct_leads.sales_stage_id
-    left join installation_change_dates on installation_change_dates.sales_stage_id = newProduct_leads.sales_stage_id
+    left join sales_milestones on sales_milestones.sales_stage_id = newProduct_leads.sales_stage_id
+    left join delivery_milestones on delivery_milestones.sales_stage_id = newProduct_leads.sales_stage_id
     left join pre_kw using (installation_id)
-    left join {{ source('source','contract') }} as contract on contract.sheets_proposal_id = system_change_dates.csi_proposal_id
+    left join {{ source('source','contract') }} as contract on contract.sheets_proposal_id = sales_milestones.new_proposal_id
         and contract.macro_id = newProduct_leads.macro_id
     left join system_change_design on system_change_design.sales_stage_id = newProduct_leads.sales_stage_id
     left join {{ source('source','container') }} as container on container.macro_id = newProduct_leads.macro_id
     left join {{ ref('metabase_visit') }} as mvisit on mvisit.main_id = newProduct_leads.main_id
         and mvisit.services like '%.installation.%'
-        and mvisit.start_time > system_change_dates.csi_app_date
-        and (coalesce(system_change_dates.csi_com_date, installation_change_dates.csi_com_date) is null
-        or mvisit.start_time < coalesce(system_change_dates.csi_com_date, installation_change_dates.csi_com_date))
-order by newProduct_leads.sales_stage_id, instal_change_creation_date asc, mvisit.start_time asc
+        and mvisit.start_time > sales_milestones.new_signing_date
+        and (coalesce(sales_milestones.new_validation_date, delivery_milestones.new_validation_date) is null
+        or mvisit.start_time < coalesce(sales_milestones.new_validation_date, delivery_milestones.new_validation_date))
+order by newProduct_leads.sales_stage_id, delivery_creation_date asc, mvisit.start_time asc
