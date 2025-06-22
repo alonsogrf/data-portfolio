@@ -1,3 +1,18 @@
+/*
+New Product OST: This table is a One Source of Truth for tracking the pipeline at different milestones for the Sales Cycle of this New Product.
+ • This New Product id offered in Post Sales stages only for applicable customers.
+ • A single customer may have multiple of these new products, implying each product sold has its own sales cycle in the timeline.
+ • The Sales Cycle is broken down into two stages: 
+    1. Sales Stage starting at the call report when the need is detected.
+    2. Delivery Stage ending when everything is completed and in production.
+        * My project (pending approval, due to priorities) is the designing a unique 'New Product Sales Cycle' Stage that covers both sales and delivery procecess:
+            1. Avoiding the tricky part of tying a Sales Stage to its Delivery Stage for multi-products customers, knowing there is no key to match one to the another,
+            2. And achieving a streamlined way to track accurate metrics from the sales cycle.
+ • In addition, I will explain some workarounds I have taken to clean this up since this it is a process that started as a solution for specific needs of out customers,
+   meaning an unstandardized process with solves-the-need steps thas has evolved over the time.
+*/
+
+
 with list as (
     select 
         stage.macro_id,
