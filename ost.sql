@@ -18,6 +18,7 @@ with list as (
     select 
         stage.macro_id,
         stage.stage_id as sales_stage_id,
+        -- Formatting is a custom function that turns the specific "instant in time" to our local time.
         formatting(stage.created_at) as sales_creation_date
     from {{ source('source','stages') }} as stages
     where stage.type = 'postSales'
@@ -119,11 +120,13 @@ delivery_milestones as (
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'schedule') as new_schedule_date,
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'validation') as new_validation_date,
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'completion') as new_completion_date,
+        -- Since this is a new process, the document for the anticipated termination of this specific contract does not even exists in our CRM.
+        -- The team is currently using this workaround to document a termination: creating custom documents on demand - just for covering the need.
         min(approvals.doc_approved_date) filter (where docs.name = 'Termination') as new_termination_date
     from newProduct_leads
         inner join {{ source('source','stages') }} as delivery_stage
             on delivery_stage.macro_id = newProduct_leads.macro_id 
-            and delivery_stage.type = 'installationChange'
+            and delivery_stage.type = 'deliveryStage'
             and newProduct_leads.sales_creation_date < formatting(delivery_stage.created_at)
         left join {{ source('source','docs') }} as docs
             on docs.stage_id = delivery_stage.stage_id 
@@ -151,7 +154,7 @@ pre_kw as (
     from newProduct_leads 
         inner join {{ source('source','installation_history') }} as installation_history 
             on newProduct_leads.project_id = installation_history.project_id
-    where installation_history.created_at < newProduct_leads.sales_creation_date
+    where formatting(installation_history.created_at) < newProduct_leads.sales_creation_date
     order by installation_history.project_id, installation_history.created_at desc
 )
 
