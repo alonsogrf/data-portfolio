@@ -71,7 +71,7 @@ approvals as (
         status.doc_id,
         min(formatting(status.created_at)) as doc_approved_date
     from newProduct_leads
-        inner join {{ source('source','status') }} as status on newProduct_leads.macro_id = status.macro_id
+        inner join {{ source('source','status') }} as status on status.macro_id = newProduct_leads.macro_id
     where type = 'document_approval'
     group by 1
 ),
@@ -83,7 +83,7 @@ sales_milestones as (
         -- I always expect only 1 ProposalId
         string_agg(trim(docs.data->>'ProposalId'), ', ') as new_proposal_id,
         -- Just in case there could be more than 1 proposal, I will get the information of the smallest attributes - restriction made from my manager
-        min(proposal.attributes) as new_attributes,
+        min(proposal.attributes) as new_proposal_attributes,
         min(docs.status) filter (where docs.doc_type = 'callReport') as new_cReport_current_status,
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'callReport') as new_cReport_date,
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'signing') as new_signing_date,
@@ -111,6 +111,7 @@ delivery_milestones as (
      • As I said before, the macro_id from newProduct_leads table may contains duplicated values:
          > One macro_id per customer, displaying as many rows as products the customer have - identifiyng each product by its sales_stage_id
      • That is the reason behind this distinct on: I will display 1 row for each delivery stage (instead of 1 row for each combination of sales_stage_id vs delivery_stage_id)
+         > The Order By is in charge of linking the last sales_stage_id (before de creation of the delivery_stage_id) only to its unique delivery_stage_id
     */
     select distinct on (delivery_stage.stage_id)
         delivery_stage.stage_id as delivery_stage_id,
@@ -124,38 +125,46 @@ delivery_milestones as (
         -- The team is currently using this workaround to document a termination: creating custom documents on demand - just for covering the need.
         min(approvals.doc_approved_date) filter (where docs.name = 'Termination') as new_termination_date
     from newProduct_leads
-        inner join {{ source('source','stages') }} as delivery_stage
-            on delivery_stage.macro_id = newProduct_leads.macro_id 
+        inner join {{ source('source','stages') }} as delivery_stage on delivery_stage.macro_id = newProduct_leads.macro_id 
             and delivery_stage.type = 'deliveryStage'
             and newProduct_leads.sales_creation_date < formatting(delivery_stage.created_at)
-        left join {{ source('source','docs') }} as docs
-            on docs.stage_id = delivery_stage.stage_id 
-        left join approvals on approvals.doc_id = docs.doc_id
+        left join {{ source('source','docs') }} as docs on docs.stage_id = delivery_stage.stage_id 
+        inner join approvals on approvals.doc_id = docs.doc_id
     where docs.doc_type in ('schedule', 'validation', 'completion', 'custom')
     group by 1, 2, 3, 4
     order by delivery_stage.stage_id, newProduct_leads.sales_creation_date desc
 ),
 
-system_change_design as (
+/*
+ • For analytical purposes, I want to show trends/patterns on the "kind of customers" that adquiare this new product.
+    > The complete analysis also includes the attributes on the new products adquired - showing out the incremental needs in where customers use to fall.
+ • However, when trying to measure this incremental need I face with some discrepancies that force the analysis to measure the attributes from the design of the project:
+    > As a result of outdated attributes by the time of filling the contract, there may be a gap between the attributes at the proposal and attributes from the final product delivered.
+        * This does not affect the customer since all their needs (signed in the contract) will be covered in the design - using the current catalog of products.
+ • Following an advice from my manager, I decided to include both attributes for reference only: new_proposal_attributes (from sales_milestones) and design_attributes (construction below)
+*/
+
+-- Original Attributes:
+previous_attributes as (
+    -- Distinct on needed since the Project History receives one log every time the billing status changes. I am looking for just one record per project_id.
+    select distinct on (project_history.project_id)
+        project_history.project_id,
+        project_history.contract_id as previous_contract_id,
+        project_history.attributes as prev_size_watts
+    from newProduct_leads 
+        inner join {{ source('source','project_history') }} as project_history on project_history.project_id = newProduct_leads.project_id
+    where formatting(project_history.created_at) < newProduct_leads.sales_creation_date
+    order by project_history.project_id, project_history.created_at desc
+),
+
+-- Design Attributes: Calling out the new attributes to calculate the incremental needs.
+design_attributes as (
     select 
         newProduct_leads.sales_stage_id,
-        round((design.data->>'systemCapacityKW')::numeric*1000,2) as system_size_pdesign
+        round((attributes.data->>'someAttributes')::numeric*10000,2) as new_design_attributes
     from newProduct_leads
-        inner join {{ source('source','docs') }} as design
-            on design.stage_id = newProduct_leads.sales_stage_id 
-            and design.doc_type in ('projectDesign')
-),
- 
-pre_kw as (
-    select distinct on (installation_history.project_id)
-        installation_history.project_id,
-        installation_history.contract_id as prev_contract_id,
-        installation_history.attributes as prev_size_watts
-    from newProduct_leads 
-        inner join {{ source('source','installation_history') }} as installation_history 
-            on newProduct_leads.project_id = installation_history.project_id
-    where formatting(installation_history.created_at) < newProduct_leads.sales_creation_date
-    order by installation_history.project_id, installation_history.created_at desc
+        inner join {{ source('source','docs') }} as attributes on attributes.stage_id = newProduct_leads.sales_stage_id
+            and design.doc_type in ('designAttributes')
 )
 
 /*There are cases when a multiple installationChanges are linked to the same systemChange due to a bad
@@ -182,13 +191,13 @@ select distinct on (newProduct_leads.sales_stage_id)
     end as csi_not_interested_date,
     delivery_milestones.new_termination_date,
     sales_milestones.new_proposal_id,
-    pre_kw.prev_size_watts,
+    previous_attributes.prev_size_watts,
     --Design and proposal system size may have differences between them. We decided to use the design size
     --as the source for measuring the increment since it is what will be physically installed
-    sales_milestones.new_attributes as contract_new_attributes,
-    system_change_design.system_size_pdesign as design_new_attributes,
-    system_change_design.system_size_pdesign - pre_kw.prev_size_watts as increment_watts,
-    pre_kw.prev_contract_id,
+    sales_milestones.new_proposal_attributes,
+    design_attributes.new_design_attributes,
+    design_attributes.new_design_attributes - previous_attributes.prev_size_watts as increment_watts,
+    previous_attributes.previous_contract_id,
     contract.contract_id as csi_contract_id,
     coalesce(contract.active, false) as csi_contract_active,
     sales_milestones.new_cReport_current_status,
@@ -197,10 +206,10 @@ select distinct on (newProduct_leads.sales_stage_id)
 from newProduct_leads
     left join sales_milestones on sales_milestones.sales_stage_id = newProduct_leads.sales_stage_id
     left join delivery_milestones on delivery_milestones.sales_stage_id = newProduct_leads.sales_stage_id
-    left join pre_kw using (installation_id)
+    left join previous_attributes using (installation_id)
     left join {{ source('source','contract') }} as contract on contract.sheets_proposal_id = sales_milestones.new_proposal_id
         and contract.macro_id = newProduct_leads.macro_id
-    left join system_change_design on system_change_design.sales_stage_id = newProduct_leads.sales_stage_id
+    left join design_attributes on design_attributes.sales_stage_id = newProduct_leads.sales_stage_id
     left join {{ source('source','container') }} as container on container.macro_id = newProduct_leads.macro_id
     left join {{ ref('metabase_visit') }} as mvisit on mvisit.main_id = newProduct_leads.main_id
         and mvisit.services like '%.installation.%'
