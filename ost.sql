@@ -144,30 +144,34 @@ delivery_milestones as (
  • Following an advice from my manager, I decided to include both attributes for reference only: new_proposal_attributes (from sales_milestones) and design_attributes (construction below)
 */
 
--- Original Attributes:
+-- Original Attributes: To set the point of comparison at assesing the change in customer needs.
 previous_attributes as (
     -- Distinct on needed since the Project History receives one log every time the billing status changes. I am looking for just one record per project_id.
     select distinct on (project_history.project_id)
         project_history.project_id,
         project_history.contract_id as previous_contract_id,
-        project_history.attributes as prev_size_watts
+        project_history.attributes as original_attributes
     from newProduct_leads 
         inner join {{ source('source','project_history') }} as project_history on project_history.project_id = newProduct_leads.project_id
     where formatting(project_history.created_at) < newProduct_leads.sales_creation_date
     order by project_history.project_id, project_history.created_at desc
 ),
 
--- Design Attributes: Calling out the new attributes to calculate the incremental needs.
+-- Design Attributes: Calling out the new attributes to calculate the change in customer needs.
 design_attributes as (
     select 
         newProduct_leads.sales_stage_id,
+        -- Numeric processing required to establish the same units as of the original_attributes from previous_attributes CTE.
         round((attributes.data->>'someAttributes')::numeric*10000,2) as new_design_attributes
     from newProduct_leads
         inner join {{ source('source','docs') }} as attributes on attributes.stage_id = newProduct_leads.sales_stage_id
             and design.doc_type in ('designAttributes')
 )
 
-/*There are cases when a multiple installationChanges are linked to the same systemChange due to a bad
+/*
+ 
+
+There are cases when a multiple installationChanges are linked to the same systemChange due to a bad
 process follow up. For this reason we add a distinct on, so we report only the first installationChange created
 */
 select distinct on (newProduct_leads.sales_stage_id)
@@ -191,12 +195,12 @@ select distinct on (newProduct_leads.sales_stage_id)
     end as csi_not_interested_date,
     delivery_milestones.new_termination_date,
     sales_milestones.new_proposal_id,
-    previous_attributes.prev_size_watts,
+    previous_attributes.original_attributes,
     --Design and proposal system size may have differences between them. We decided to use the design size
     --as the source for measuring the increment since it is what will be physically installed
     sales_milestones.new_proposal_attributes,
     design_attributes.new_design_attributes,
-    design_attributes.new_design_attributes - previous_attributes.prev_size_watts as increment_watts,
+    design_attributes.new_design_attributes - previous_attributes.original_attributes as increment_watts,
     previous_attributes.previous_contract_id,
     contract.contract_id as csi_contract_id,
     coalesce(contract.active, false) as csi_contract_active,
