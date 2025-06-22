@@ -106,9 +106,13 @@ sales_milestones as (
  
 -- Delivery Milestones: Looking for the 3°, 5° and 6° milestones. Also including a termination milestone for informative purposes only.
 delivery_milestones as (
-    -- 
+    /*
+     • As I said before, the macro_id from newProduct_leads table may contains duplicated values:
+         > One macro_id per customer, displaying as many rows as products the customer have - identifiyng each product by its sales_stage_id
+     • That is the reason behind this distinct on: I will display 1 row for each delivery stage (instead of 1 row for each combination of sales_stage_id vs delivery_stage_id)
+    */
     select distinct on (delivery_stage.stage_id)
-        delivery_stage.stage_id as delivery_id,
+        delivery_stage.stage_id as delivery_stage_id,
         formatting(delivery_stage.created_at) as delivery_creation_date,
         newProduct_leads.sales_stage_id,
         newProduct_leads.sales_creation_date,
