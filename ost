@@ -1,9 +1,9 @@
 with list as (
     select 
-        stage.container_id,
-        stage.checklist_id as system_change_checklist_id,
-        bri_mx_date(stage.created_at) as csi_creation_date
-    from {{ source('bright','checklist') }} as checklist
+        stage.macro_id,
+        stage.stage_id as sales_stage_id,
+        formatting(stage.created_at) as sales_creation_date
+    from {{ source('source','stages') }} as checklist
     where stage.type = 'systemChange'
 ),
 
@@ -16,8 +16,8 @@ csi_leads as (
         lead.customer_id,
         list.*
     from list
-    inner join {{ source('bright','lead') }} as lead on lead.container_id = list.container_id
-    inner join {{ source('bright','checklist_item') }} as checklist_item on checklist_item.checklist_id = list.system_change_checklist_id
+    inner join {{ source('source','lead') }} as lead on lead.macro_id = list.macro_id
+    inner join {{ source('source','checklist_item') }} as checklist_item on checklist_item.stage_id = list.sales_stage_id
     where checklist_item.data is not null
         and checklist_item.item_type = 'changeDescription' 
         and checklist_item.data->>'type' = 'CSI'
@@ -26,9 +26,9 @@ csi_leads as (
 activities as (
     select
         activity.subject_id,
-        min(bri_mx_date(activity.created_at)) as act_item_approved_date
+        min(formatting(activity.created_at)) as act_item_approved_date
     from csi_leads
-    inner join {{ source('bright','activity') }} as activity on csi_leads.container_id = activity.container_id
+    inner join {{ source('source','activity') }} as activity on csi_leads.macro_id = activity.macro_id
     where type = 'checklist_item_approve'
     group by 1
 ),
@@ -41,7 +41,7 @@ prioritize the dates from installationChange when available.
 */
 system_change_dates as (
     select
-        csi_leads.system_change_checklist_id,
+        csi_leads.sales_stage_id,
         --we always expects only 1 sheetsProposalId
         string_agg(trim(checklist_item.data->>'sheetsProposalId'), ', ') as csi_proposal_id,
         min(proposal.system_size_watts) as new_size_watts,
@@ -54,9 +54,9 @@ system_change_dates as (
         --here we assume the interest is true if the space is empty
         coalesce(checklist_item.data->>'customerInterested' != 'no', true) as csi_interested
     from csi_leads
-    inner join {{ source('bright','checklist_item') }} as checklist_item on checklist_item.checklist_id = csi_leads.system_change_checklist_id
+    inner join {{ source('source','checklist_item') }} as checklist_item on checklist_item.stage_id = csi_leads.sales_stage_id
     inner join activities on activities.subject_id = checklist_item.checklist_item_id
-    left join {{ source('bright','proposal') }} as proposal on proposal.sheets_proposal_id = trim(checklist_item.data->>'sheetsProposalId')
+    left join {{ source('source','proposal') }} as proposal on proposal.sheets_proposal_id = trim(checklist_item.data->>'sheetsProposalId')
     where checklist_item.item_type in ('systemChangeCustomerCallReport', 'subscriptionContract', 'welcomeCall', 'interconnection', 'installationFunctionDemo')
     group by 1, 10
 ),
@@ -67,35 +67,35 @@ installation_change_dates as (
     To link correctly the checklist, we follow this rule: the Installation Change should be linked to the 
     most recent System Change checklist created before the Installation Change.
     */
-    select distinct on (installation_change_stage.checklist_id)
-        installation_change_stage.checklist_id as instal_change_checklist_id,
-        bri_mx_date(installation_change_stage.created_at) as instal_change_creation_date,
-        csi_leads.system_change_checklist_id,
-        csi_leads.csi_creation_date,
+    select distinct on (installation_change_stage.stage_id)
+        installation_change_stage.stage_id as instal_change_checklist_id,
+        formatting(installation_change_stage.created_at) as instal_change_creation_date,
+        csi_leads.sales_stage_id,
+        csi_leads.sales_creation_date,
         min(activities.act_item_approved_date) filter (where checklist_item.item_type = 'welcomeCall') as csi_wc_date,
         min(activities.act_item_approved_date) filter (where checklist_item.item_type = 'installationFunctionDemo') as csi_com_date,
         min(activities.act_item_approved_date) filter (where checklist_item.item_type = 'interconnection') as csi_ix_date,
         min(activities.act_item_approved_date) filter (where checklist_item.name = 'After WC CSI TD') as csi_td_date
     from csi_leads
-    inner join {{ source('bright','checklist') }} as installation_change_checklist
-        on installation_change_stage.container_id = csi_leads.container_id 
+    inner join {{ source('source','stages') }} as installation_change_checklist
+        on installation_change_stage.macro_id = csi_leads.macro_id 
         and installation_change_stage.type = 'installationChange'
-        and csi_leads.csi_creation_date < bri_mx_date(installation_change_stage.created_at)
-    left join {{ source('bright','checklist_item') }} as checklist_item
-        on checklist_item.checklist_id = installation_change_stage.checklist_id 
+        and csi_leads.sales_creation_date < formatting(installation_change_stage.created_at)
+    left join {{ source('source','checklist_item') }} as checklist_item
+        on checklist_item.stage_id = installation_change_stage.stage_id 
     left join activities on activities.subject_id = checklist_item.checklist_item_id
     where checklist_item.item_type in ('welcomeCall', 'interconnection', 'installationFunctionDemo', 'custom')
     group by 1, 2, 3, 4
-    order by installation_change_stage.checklist_id, csi_leads.csi_creation_date desc
+    order by installation_change_stage.stage_id, csi_leads.sales_creation_date desc
 ),
 
 system_change_design as (
     select 
-        csi_leads.system_change_checklist_id,
+        csi_leads.sales_stage_id,
         round((design.data->>'systemCapacityKW')::numeric*1000,2) as system_size_pdesign
     from csi_leads
-    inner join {{ source('bright','checklist_item') }} as design
-        on design.checklist_id = csi_leads.system_change_checklist_id 
+    inner join {{ source('source','checklist_item') }} as design
+        on design.stage_id = csi_leads.sales_stage_id 
         and design.item_type in ('projectDesign')
 ),
  
@@ -105,23 +105,23 @@ pre_kw as (
         installation_history.contract_id as prev_contract_id,
         installation_history.system_size_watts as prev_size_watts
     from csi_leads 
-    inner join {{ source('bright','installation_history') }} as installation_history 
+    inner join {{ source('source','installation_history') }} as installation_history 
         on csi_leads.installation_id = installation_history.installation_id
-    where installation_history.created_at < csi_leads.csi_creation_date
+    where installation_history.created_at < csi_leads.sales_creation_date
     order by installation_history.installation_id, installation_history.created_at desc
 )
 
 /*There are cases when a multiple installationChanges are linked to the same systemChange due to a bad
 process follow up. For this reason we add a distinct on, so we report only the first installationChange created
 */
-select distinct on (csi_leads.system_change_checklist_id)
+select distinct on (csi_leads.sales_stage_id)
     csi_leads.lead_id,
     csi_leads.installation_id,
-    csi_leads.system_change_checklist_id,
-    'https://ops.thinkbright.mx/containers/' || csi_leads.container_id || '/checklists/' || csi_leads.system_change_checklist_id as ops_link,
+    csi_leads.sales_stage_id,
+    'https://ops.thinkbright.mx/containers/' || csi_leads.macro_id || '/checklists/' || csi_leads.sales_stage_id as ops_link,
     csi_leads.customer_id,
     (container.attrs->>'csi/assigned_to')::bigint as csi_atribute_ee_id,
-    csi_leads.csi_creation_date,
+    csi_leads.sales_creation_date,
     system_change_dates.csi_rsv_date,
     system_change_dates.csi_app_date,
     coalesce(installation_change_dates.csi_wc_date, system_change_dates.csi_wc_date) as csi_wc_date,
@@ -148,16 +148,16 @@ select distinct on (csi_leads.system_change_checklist_id)
     coalesce(system_change_dates.csi_interested, true) as csi_interested,
     installation_change_dates.csi_td_date is not null as after_csi_wc_td
 from csi_leads
-left join system_change_dates on system_change_dates.system_change_checklist_id = csi_leads.system_change_checklist_id
-left join installation_change_dates on installation_change_dates.system_change_checklist_id = csi_leads.system_change_checklist_id
+left join system_change_dates on system_change_dates.sales_stage_id = csi_leads.sales_stage_id
+left join installation_change_dates on installation_change_dates.sales_stage_id = csi_leads.sales_stage_id
 left join pre_kw using (installation_id)
-left join {{ source('bright','contract') }} as contract on contract.sheets_proposal_id = system_change_dates.csi_proposal_id
-    and contract.container_id = csi_leads.container_id
-left join system_change_design on system_change_design.system_change_checklist_id = csi_leads.system_change_checklist_id
-left join {{ source('bright','container') }} as container on container.container_id = csi_leads.container_id
+left join {{ source('source','contract') }} as contract on contract.sheets_proposal_id = system_change_dates.csi_proposal_id
+    and contract.macro_id = csi_leads.macro_id
+left join system_change_design on system_change_design.sales_stage_id = csi_leads.sales_stage_id
+left join {{ source('source','container') }} as container on container.macro_id = csi_leads.macro_id
 left join {{ ref('metabase_visit') }} as mvisit on mvisit.lead_id = csi_leads.lead_id
     and mvisit.services like '%.installation.%'
     and mvisit.start_time > system_change_dates.csi_app_date
     and (coalesce(system_change_dates.csi_com_date, installation_change_dates.csi_com_date) is null
     or mvisit.start_time < coalesce(system_change_dates.csi_com_date, installation_change_dates.csi_com_date))
-order by csi_leads.system_change_checklist_id, instal_change_creation_date asc, mvisit.start_time asc
+order by csi_leads.sales_stage_id, instal_change_creation_date asc, mvisit.start_time asc
