@@ -1,0 +1,163 @@
+with list as (
+    select 
+        stage.macro_id,
+        stage.stage_id as sales_stage_id,
+        formatting(stage.created_at) as sales_creation_date
+    from {{ source('source','stages') }} as stages
+    where stage.type = 'systemChange'
+),
+
+csi_leads as ( 
+    --Selection of all leads that have a systemChange checklist opened with subtype "CSI"
+    --There could be multiple checklist per lead, we will show all of them
+    select
+        lead.lead_id,
+        lead.installation_id,
+        lead.customer_id,
+        list.*
+    from list
+    inner join {{ source('source','lead') }} as lead on lead.macro_id = list.macro_id
+    inner join {{ source('source','docs') }} as docs on docs.stage_id = list.sales_stage_id
+    where docs.data is not null
+        and docs.doc_type = 'changeDescription' 
+        and docs.data->>'type' = 'CSI'
+),
+
+approvals as (
+    select
+        status.subject_id,
+        min(formatting(status.created_at)) as act_item_approved_date
+    from csi_leads
+    inner join {{ source('source','status') }} as status on csi_leads.macro_id = status.macro_id
+    where type = 'document_approval'
+    group by 1
+),
+
+/* Due to multiple changes on CSI process. The Welcome Call, Commissioning, and IX checklist_items
+could be contained either on a systemChange or an installationChange checklist or even in both of them
+causing some duplication.
+We’ve decided to get the date of the first approval for each type of item from both checklists. And then 
+prioritize the dates from installationChange when available.
+*/
+system_change_dates as (
+    select
+        csi_leads.sales_stage_id,
+        --we always expects only 1 sheetsProposalId
+        string_agg(trim(docs.data->>'sheetsProposalId'), ', ') as csi_proposal_id,
+        min(proposal.system_size_watts) as new_size_watts,
+        min(docs.status) filter (where docs.doc_type = 'systemChangeCustomerCallReport') as csi_rsv_current_status,
+        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'systemChangeCustomerCallReport') as csi_rsv_date,
+        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'subscriptionContract') as csi_app_date,
+        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'welcomeCall') as csi_wc_date,
+        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'installationFunctionDemo') as csi_com_date,
+        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'interconnection') as csi_ix_date,
+        --here we assume the interest is true if the space is empty
+        coalesce(docs.data->>'customerInterested' != 'no', true) as csi_interested
+    from csi_leads
+    inner join {{ source('source','checklist_item') }} as checklist_item on docs.stage_id = csi_leads.sales_stage_id
+    inner join approvals on approvals.subject_id = docs.checklist_item_id
+    left join {{ source('source','proposal') }} as proposal on proposal.sheets_proposal_id = trim(docs.data->>'sheetsProposalId')
+    where docs.doc_type in ('systemChangeCustomerCallReport', 'subscriptionContract', 'welcomeCall', 'interconnection', 'installationFunctionDemo')
+    group by 1, 10
+),
+
+installation_change_dates as (
+    /*The CSI process includes two checklists: System Change and Installation Change. However, a single lead
+    may have multiple, incomplete CSI processes.
+    To link correctly the checklist, we follow this rule: the Installation Change should be linked to the 
+    most recent System Change checklist created before the Installation Change.
+    */
+    select distinct on (installation_change_stage.stage_id)
+        installation_change_stage.stage_id as instal_change_checklist_id,
+        formatting(installation_change_stage.created_at) as instal_change_creation_date,
+        csi_leads.sales_stage_id,
+        csi_leads.sales_creation_date,
+        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'welcomeCall') as csi_wc_date,
+        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'installationFunctionDemo') as csi_com_date,
+        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'interconnection') as csi_ix_date,
+        min(approvals.act_item_approved_date) filter (where docs.name = 'After WC CSI TD') as csi_td_date
+    from csi_leads
+    inner join {{ source('source','stages') }} as installation_change_checklist
+        on installation_change_stage.macro_id = csi_leads.macro_id 
+        and installation_change_stage.type = 'installationChange'
+        and csi_leads.sales_creation_date < formatting(installation_change_stage.created_at)
+    left join {{ source('source','checklist_item') }} as checklist_item
+        on docs.stage_id = installation_change_stage.stage_id 
+    left join approvals on approvals.subject_id = docs.checklist_item_id
+    where docs.doc_type in ('welcomeCall', 'interconnection', 'installationFunctionDemo', 'custom')
+    group by 1, 2, 3, 4
+    order by installation_change_stage.stage_id, csi_leads.sales_creation_date desc
+),
+
+system_change_design as (
+    select 
+        csi_leads.sales_stage_id,
+        round((design.data->>'systemCapacityKW')::numeric*1000,2) as system_size_pdesign
+    from csi_leads
+    inner join {{ source('source','checklist_item') }} as design
+        on design.stage_id = csi_leads.sales_stage_id 
+        and design.doc_type in ('projectDesign')
+),
+ 
+pre_kw as (
+    select distinct on (installation_history.installation_id)
+        installation_history.installation_id,
+        installation_history.contract_id as prev_contract_id,
+        installation_history.system_size_watts as prev_size_watts
+    from csi_leads 
+    inner join {{ source('source','installation_history') }} as installation_history 
+        on csi_leads.installation_id = installation_history.installation_id
+    where installation_history.created_at < csi_leads.sales_creation_date
+    order by installation_history.installation_id, installation_history.created_at desc
+)
+
+/*There are cases when a multiple installationChanges are linked to the same systemChange due to a bad
+process follow up. For this reason we add a distinct on, so we report only the first installationChange created
+*/
+select distinct on (csi_leads.sales_stage_id)
+    csi_leads.lead_id,
+    csi_leads.installation_id,
+    csi_leads.sales_stage_id,
+    'https://ops.thinkbright.mx/containers/' || csi_leads.macro_id || '/checklists/' || csi_leads.sales_stage_id as ops_link,
+    csi_leads.customer_id,
+    (container.attrs->>'csi/assigned_to')::bigint as csi_atribute_ee_id,
+    csi_leads.sales_creation_date,
+    system_change_dates.csi_rsv_date,
+    system_change_dates.csi_app_date,
+    coalesce(installation_change_dates.csi_wc_date, system_change_dates.csi_wc_date) as csi_wc_date,
+    (mvisit.start_time)::date as csi_inst_date,
+    coalesce(installation_change_dates.csi_com_date, system_change_dates.csi_com_date) as csi_com_date,
+    coalesce(installation_change_dates.csi_ix_date, system_change_dates.csi_ix_date) as csi_ix_date,
+    case
+        when not coalesce(system_change_dates.csi_interested, true) 
+        then system_change_dates.csi_rsv_date
+        else null
+    end as csi_not_interested_date,
+    installation_change_dates.csi_td_date,
+    system_change_dates.csi_proposal_id,
+    pre_kw.prev_size_watts,
+    --Design and proposal system size may have differences between them. We decided to use the design size
+    --as the source for measuring the increment since it is what will be physically installed
+    system_change_dates.new_size_watts as contract_new_size_watts,
+    system_change_design.system_size_pdesign as design_new_size_watts,
+    system_change_design.system_size_pdesign - pre_kw.prev_size_watts as increment_watts,
+    pre_kw.prev_contract_id,
+    contract.contract_id as csi_contract_id,
+    coalesce(contract.active, false) as csi_contract_active,
+    system_change_dates.csi_rsv_current_status,
+    coalesce(system_change_dates.csi_interested, true) as csi_interested,
+    installation_change_dates.csi_td_date is not null as after_csi_wc_td
+from csi_leads
+left join system_change_dates on system_change_dates.sales_stage_id = csi_leads.sales_stage_id
+left join installation_change_dates on installation_change_dates.sales_stage_id = csi_leads.sales_stage_id
+left join pre_kw using (installation_id)
+left join {{ source('source','contract') }} as contract on contract.sheets_proposal_id = system_change_dates.csi_proposal_id
+    and contract.macro_id = csi_leads.macro_id
+left join system_change_design on system_change_design.sales_stage_id = csi_leads.sales_stage_id
+left join {{ source('source','container') }} as container on container.macro_id = csi_leads.macro_id
+left join {{ ref('metabase_visit') }} as mvisit on mvisit.lead_id = csi_leads.lead_id
+    and mvisit.services like '%.installation.%'
+    and mvisit.start_time > system_change_dates.csi_app_date
+    and (coalesce(system_change_dates.csi_com_date, installation_change_dates.csi_com_date) is null
+    or mvisit.start_time < coalesce(system_change_dates.csi_com_date, installation_change_dates.csi_com_date))
+order by csi_leads.sales_stage_id, instal_change_creation_date asc, mvisit.start_time asc
