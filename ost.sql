@@ -100,7 +100,7 @@ sales_milestones as (
     from newProduct_leads
         inner join {{ source('source','docs') }} as docs on docs.stage_id = newProduct_leads.sales_stage_id
         inner join approvals on approvals.doc_id = docs.doc_id
-        left join {{ source('source','proposal') }} as proposal on proposal.sheets_proposal_id = trim(docs.data->>'ProposalId')
+        left join {{ source('source','proposal') }} as proposal on proposal.proposal_id = trim(docs.data->>'ProposalId')
     where docs.doc_type in ('callReport', 'signing', 'schedule', 'validation', 'completion')
     group by 1, 10
 ),
@@ -211,14 +211,14 @@ select distinct on (newProduct_leads.sales_stage_id)
 from newProduct_leads
     left join sales_milestones on sales_milestones.sales_stage_id = newProduct_leads.sales_stage_id
     left join delivery_milestones on delivery_milestones.sales_stage_id = newProduct_leads.sales_stage_id
-    left join previous_attributes using (installation_id)
-    left join {{ source('source','contract') }} as contract on contract.sheets_proposal_id = sales_milestones.new_proposal_id
+    left join previous_attributes using (project_id)
+    left join {{ source('source','contract') }} as contract on contract.proposal_id = sales_milestones.new_proposal_id
         and contract.macro_id = newProduct_leads.macro_id
     left join design_attributes on design_attributes.sales_stage_id = newProduct_leads.sales_stage_id
     left join {{ source('source','macros') }} as macros on macros.macro_id = newProduct_leads.macro_id
-    left join {{ ref('metabase_visit') }} as deliveries on deliveries.main_id = newProduct_leads.main_id
-        and deliveries.services like '%.installation.%'
+    left join {{ ref('deliveries') }} as deliveries on deliveries.main_id = newProduct_leads.main_id
+        and deliveries.services like '%.project.%'
         and deliveries.start_time > sales_milestones.new_signing_date
-        and (coalesce(sales_milestones.new_validation_date, delivery_milestones.new_validation_date) is null
-        or deliveries.start_time < coalesce(sales_milestones.new_validation_date, delivery_milestones.new_validation_date))
+        and (coalesce(delivery_milestones.new_validation_date, sales_milestones.new_validation_date) is null
+        or deliveries.start_time < coalesce(delivery_milestones.new_validation_date, sales_milestones.new_validation_date))
 order by newProduct_leads.sales_stage_id, delivery_creation_date asc, deliveries.start_time asc
