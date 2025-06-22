@@ -169,18 +169,20 @@ design_attributes as (
 )
 
 /*
- 
-
-There are cases when a multiple installationChanges are linked to the same systemChange due to a bad
-process follow up. For this reason we add a distinct on, so we report only the first installationChange created
+ • Finally, to build the main table I retrive the declared principles:
+    > I need a distinct on to only report one sales cycle per product: (almost) each sales stage matching a single delivery stage.
+    > This also means that will be displayed each product: there will be multiple records per customer.
+    > The applicable milestones are going to be retrived from delivery stage when posible. Only if missing, they would be looked up from sales stage.
+    > The relation between sales and delivery stage is build by their creation dates. The deliveries scheduled within this period will be linked to this sales cycle. 
+    > The change on customer needs are measured from the comparison between the original product and the designed project (instead of the signed specifications from the contract)
 */
 select distinct on (newProduct_leads.sales_stage_id)
     newProduct_leads.main_id,
     newProduct_leads.project_id,
     newProduct_leads.sales_stage_id,
-    'https://ops.thinkbright.mx/containers/' || newProduct_leads.macro_id || '/checklists/' || newProduct_leads.sales_stage_id as ops_link,
+    'https://CRM/...' || ... || '...' || ... as crm_url,
     newProduct_leads.customer_id,
-    (container.attrs->>'csi/assigned_to')::bigint as csi_atribute_ee_id,
+    (macros.attrs->>'csi/assigned_to')::bigint as csi_atribute_ee_id,
     newProduct_leads.sales_creation_date,
     sales_milestones.new_cReport_date,
     sales_milestones.new_signing_date,
@@ -214,7 +216,7 @@ from newProduct_leads
     left join {{ source('source','contract') }} as contract on contract.sheets_proposal_id = sales_milestones.new_proposal_id
         and contract.macro_id = newProduct_leads.macro_id
     left join design_attributes on design_attributes.sales_stage_id = newProduct_leads.sales_stage_id
-    left join {{ source('source','container') }} as container on container.macro_id = newProduct_leads.macro_id
+    left join {{ source('source','container') }} as container on macros.macro_id = newProduct_leads.macro_id
     left join {{ ref('metabase_visit') }} as mvisit on mvisit.main_id = newProduct_leads.main_id
         and mvisit.services like '%.installation.%'
         and mvisit.start_time > sales_milestones.new_signing_date
