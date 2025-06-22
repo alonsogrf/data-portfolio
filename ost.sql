@@ -96,7 +96,7 @@ sales_milestones as (
               b. Whenever we have an interested customer, the team could hop to another part of the process, forgetting about documenting the affirmative interest.
         That is why whenever there may be an empty space, I will take it as a reafirmation for customer interest.
         */
-        coalesce(docs.data->>'customerInterested' != 'no', true) as csi_interested
+        coalesce(docs.data->>'customerInterested' != 'no', true) as new_has_interest
     from newProduct_leads
         inner join {{ source('source','docs') }} as docs on docs.stage_id = newProduct_leads.sales_stage_id
         inner join approvals on approvals.doc_id = docs.doc_id
@@ -180,35 +180,34 @@ select distinct on (newProduct_leads.sales_stage_id)
     newProduct_leads.main_id,
     newProduct_leads.project_id,
     newProduct_leads.sales_stage_id,
+    delivery_milestones.delivery_stage_id,
     'https://CRM/...' || ... || '...' || ... as crm_url,
     newProduct_leads.customer_id,
-    (macros.attrs->>'csi/assigned_to')::bigint as csi_atribute_ee_id,
+    (macros.attributes->>'salesOwner')::bigint as sales_owner_id,
     newProduct_leads.sales_creation_date,
     sales_milestones.new_cReport_date,
     sales_milestones.new_signing_date,
     coalesce(delivery_milestones.new_schedule_date, sales_milestones.new_schedule_date) as new_schedule_date,
-    (mvisit.start_time)::date as csi_inst_date,
+    (deliveries.start_time)::date as new_delivery_date,
     coalesce(delivery_milestones.new_validation_date, sales_milestones.new_validation_date) as new_validation_date,
     coalesce(delivery_milestones.new_completion_date, sales_milestones.new_completion_date) as new_completion_date,
     case
-        when not coalesce(sales_milestones.csi_interested, true) 
+        when not coalesce(sales_milestones.new_has_interest, true) 
         then sales_milestones.new_cReport_date
         else null
-    end as csi_not_interested_date,
+    end as new_not_interested_date,
     delivery_milestones.new_termination_date,
     sales_milestones.new_proposal_id,
     previous_attributes.original_attributes,
-    --Design and proposal system size may have differences between them. We decided to use the design size
-    --as the source for measuring the increment since it is what will be physically installed
     sales_milestones.new_proposal_attributes,
     design_attributes.new_design_attributes,
-    design_attributes.new_design_attributes - previous_attributes.original_attributes as increment_watts,
+    design_attributes.new_design_attributes - previous_attributes.original_attributes as incremental_needs,
     previous_attributes.previous_contract_id,
-    contract.contract_id as csi_contract_id,
-    coalesce(contract.active, false) as csi_contract_active,
+    contract.contract_id as new_contract_id,
+    coalesce(contract.active, false) as new_contract_active,
     sales_milestones.new_cReport_current_status,
-    coalesce(sales_milestones.csi_interested, true) as csi_interested,
-    delivery_milestones.new_termination_date is not null as after_csi_wc_td
+    coalesce(sales_milestones.new_has_interest, true) as new_has_interest,
+    delivery_milestones.new_termination_date is not null as termination_requested,
 from newProduct_leads
     left join sales_milestones on sales_milestones.sales_stage_id = newProduct_leads.sales_stage_id
     left join delivery_milestones on delivery_milestones.sales_stage_id = newProduct_leads.sales_stage_id
@@ -216,10 +215,10 @@ from newProduct_leads
     left join {{ source('source','contract') }} as contract on contract.sheets_proposal_id = sales_milestones.new_proposal_id
         and contract.macro_id = newProduct_leads.macro_id
     left join design_attributes on design_attributes.sales_stage_id = newProduct_leads.sales_stage_id
-    left join {{ source('source','container') }} as container on macros.macro_id = newProduct_leads.macro_id
-    left join {{ ref('metabase_visit') }} as mvisit on mvisit.main_id = newProduct_leads.main_id
-        and mvisit.services like '%.installation.%'
-        and mvisit.start_time > sales_milestones.new_signing_date
+    left join {{ source('source','macros') }} as macros on macros.macro_id = newProduct_leads.macro_id
+    left join {{ ref('metabase_visit') }} as deliveries on deliveries.main_id = newProduct_leads.main_id
+        and deliveries.services like '%.installation.%'
+        and deliveries.start_time > sales_milestones.new_signing_date
         and (coalesce(sales_milestones.new_validation_date, delivery_milestones.new_validation_date) is null
-        or mvisit.start_time < coalesce(sales_milestones.new_validation_date, delivery_milestones.new_validation_date))
-order by newProduct_leads.sales_stage_id, delivery_creation_date asc, mvisit.start_time asc
+        or deliveries.start_time < coalesce(sales_milestones.new_validation_date, delivery_milestones.new_validation_date))
+order by newProduct_leads.sales_stage_id, delivery_creation_date asc, deliveries.start_time asc
