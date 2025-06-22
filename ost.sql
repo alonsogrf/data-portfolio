@@ -59,16 +59,45 @@ newProduct_leads as (
     b. Visibility on both closed and open cycles: If there is a new process ongoing (only sales stage without a delivery stage created), I could see it too in this single OST.
     c. Milestones benchmarking: The historical data can be used to uncover patterns and etablishing new goals for a leaner process.
 */
- --HERE
--- Approvals: Since each milestone could have any status, I am calling those on approval state only (this status marks the accomplishment)
+
+-- Approvals: For only calling the approved milestones
 approvals as (
     select
         status.doc_id,
-        min(formatting(status.created_at)) as act_item_approved_date
+        min(formatting(status.created_at)) as doc_approved_date
     from newProduct_leads
         inner join {{ source('source','status') }} as status on newProduct_leads.macro_id = status.macro_id
     where type = 'document_approval'
     group by 1
+),
+
+-- HERE
+installation_change_dates as (
+    /*The CSI process includes two checklists: System Change and Installation Change. However, a single lead
+    may have multiple, incomplete CSI processes.
+    To link correctly the checklist, we follow this rule: the Installation Change should be linked to the 
+    most recent System Change checklist created before the Installation Change.
+    */
+    select distinct on (installation_change_stage.stage_id)
+        installation_change_stage.stage_id as instal_change_checklist_id,
+        formatting(installation_change_stage.created_at) as instal_change_creation_date,
+        newProduct_leads.sales_stage_id,
+        newProduct_leads.sales_creation_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'welcomeCall') as csi_wc_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'installationFunctionDemo') as csi_com_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'interconnection') as csi_ix_date,
+        min(approvals.doc_approved_date) filter (where docs.name = 'After WC CSI TD') as csi_td_date
+    from newProduct_leads
+        inner join {{ source('source','stages') }} as installation_change_checklist
+            on installation_change_stage.macro_id = newProduct_leads.macro_id 
+            and installation_change_stage.type = 'installationChange'
+            and newProduct_leads.sales_creation_date < formatting(installation_change_stage.created_at)
+        left join {{ source('source','checklist_item') }} as checklist_item
+            on docs.stage_id = installation_change_stage.stage_id 
+        left join approvals on approvals.doc_id = docs.doc_id
+    where docs.doc_type in ('welcomeCall', 'interconnection', 'installationFunctionDemo', 'custom')
+    group by 1, 2, 3, 4
+    order by installation_change_stage.stage_id, newProduct_leads.sales_creation_date desc
 ),
 
 /* Due to multiple changes on CSI process. The Welcome Call, Commissioning, and IX checklist_items
@@ -84,11 +113,11 @@ system_change_dates as (
         string_agg(trim(docs.data->>'sheetsProposalId'), ', ') as csi_proposal_id,
         min(proposal.system_size_watts) as new_size_watts,
         min(docs.status) filter (where docs.doc_type = 'systemChangeCustomerCallReport') as csi_rsv_current_status,
-        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'systemChangeCustomerCallReport') as csi_rsv_date,
-        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'subscriptionContract') as csi_app_date,
-        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'welcomeCall') as csi_wc_date,
-        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'installationFunctionDemo') as csi_com_date,
-        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'interconnection') as csi_ix_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'systemChangeCustomerCallReport') as csi_rsv_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'subscriptionContract') as csi_app_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'welcomeCall') as csi_wc_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'installationFunctionDemo') as csi_com_date,
+        min(approvals.doc_approved_date) filter (where docs.doc_type = 'interconnection') as csi_ix_date,
         --here we assume the interest is true if the space is empty
         coalesce(docs.data->>'customerInterested' != 'no', true) as csi_interested
     from newProduct_leads
@@ -97,34 +126,6 @@ system_change_dates as (
         left join {{ source('source','proposal') }} as proposal on proposal.sheets_proposal_id = trim(docs.data->>'sheetsProposalId')
     where docs.doc_type in ('systemChangeCustomerCallReport', 'subscriptionContract', 'welcomeCall', 'interconnection', 'installationFunctionDemo')
     group by 1, 10
-),
-
-installation_change_dates as (
-    /*The CSI process includes two checklists: System Change and Installation Change. However, a single lead
-    may have multiple, incomplete CSI processes.
-    To link correctly the checklist, we follow this rule: the Installation Change should be linked to the 
-    most recent System Change checklist created before the Installation Change.
-    */
-    select distinct on (installation_change_stage.stage_id)
-        installation_change_stage.stage_id as instal_change_checklist_id,
-        formatting(installation_change_stage.created_at) as instal_change_creation_date,
-        newProduct_leads.sales_stage_id,
-        newProduct_leads.sales_creation_date,
-        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'welcomeCall') as csi_wc_date,
-        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'installationFunctionDemo') as csi_com_date,
-        min(approvals.act_item_approved_date) filter (where docs.doc_type = 'interconnection') as csi_ix_date,
-        min(approvals.act_item_approved_date) filter (where docs.name = 'After WC CSI TD') as csi_td_date
-    from newProduct_leads
-        inner join {{ source('source','stages') }} as installation_change_checklist
-            on installation_change_stage.macro_id = newProduct_leads.macro_id 
-            and installation_change_stage.type = 'installationChange'
-            and newProduct_leads.sales_creation_date < formatting(installation_change_stage.created_at)
-        left join {{ source('source','checklist_item') }} as checklist_item
-            on docs.stage_id = installation_change_stage.stage_id 
-        left join approvals on approvals.doc_id = docs.doc_id
-    where docs.doc_type in ('welcomeCall', 'interconnection', 'installationFunctionDemo', 'custom')
-    group by 1, 2, 3, 4
-    order by installation_change_stage.stage_id, newProduct_leads.sales_creation_date desc
 ),
 
 system_change_design as (
