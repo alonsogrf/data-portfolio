@@ -23,7 +23,11 @@ with list as (
     where stage.type = 'postSales'
 ),
 
--- New Product Leads: Allow me to work with a specific list of foreing keys to call all the data from relevant tables for only customers of interest.
+/*
+ • New Product Leads: Allow me to work with a specific list of foreing keys to call all the data from relevant tables for only customers of interest.
+    > Heads Up! This list may have multiple duplicated records - as many as the multiple products each customer may have.
+    > The unique ID to identify each sales cycle will be sales_stage_id from list CTE.
+*/
 newProduct_leads as ( 
     select
         main.main_id,
@@ -100,8 +104,9 @@ sales_milestones as (
     group by 1, 10
 ),
  
--- Delivery Milestones: 
+-- Delivery Milestones: Looking for the 3°, 5° and 6° milestones. Also including a termination milestone for informative purposes only.
 delivery_milestones as (
+    -- 
     select distinct on (delivery_stage.stage_id)
         delivery_stage.stage_id as delivery_id,
         formatting(delivery_stage.created_at) as delivery_creation_date,
@@ -112,7 +117,7 @@ delivery_milestones as (
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'completion') as new_completion_date,
         min(approvals.doc_approved_date) filter (where docs.name = 'Termination') as new_termination_date
     from newProduct_leads
-        inner join {{ source('source','stages') }} as installation_change_checklist
+        inner join {{ source('source','stages') }} as delivery_stage
             on delivery_stage.macro_id = newProduct_leads.macro_id 
             and delivery_stage.type = 'installationChange'
             and newProduct_leads.sales_creation_date < formatting(delivery_stage.created_at)
