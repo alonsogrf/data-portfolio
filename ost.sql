@@ -9,7 +9,7 @@
 -- • Since there's no unique identifier linking both stages (especially when customers have multiple products), 
 --   this table establishes a logical connection based on timing rules.
 -- • It also helps to normalize a historically unstructured process, enabling performance benchmarking and operational insights.
-
+ 
 -- Stage Filter: Reduce processing by limiting the dataset to Sales Stages related to the post-sales product.
 -- • This sets the base for the entire sales cycle timeline.
 with list as (
