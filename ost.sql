@@ -1,16 +1,17 @@
 -- This query is inspired by real challenges I have solved in my previous role. 
 -- ⚠️ All have been anonymized to ensure confidentiality.
 
--- New Product OST: This dataset acts as a One Source of Truth to track each sales cycle of a post-sales product offering.
--- • Customers may acquire this product after their initial contract, generating a new sales-delivery flow per product.
--- • Each product cycle is structured in two stages:
---    1. Sales Stage: from interest detection to contract approval.
---    2. Delivery Stage: from scheduling to fulfillment and validation.
--- • Since there's no unique identifier linking both stages (especially when customers have multiple products), 
---   this table establishes a logical connection based on timing rules.
--- • It also helps to normalize a historically unstructured process, enabling performance benchmarking and operational insights.
+----- NEW PRODUCT OST -----
+-- • This dataset acts as a One Source of Truth to track each sales cycle of a new post-sales product offering.
+--    > Customers may acquire this product after their initial contract, generating a new sales-delivery flow per product.
+--    > Each product cycle is structured in two stages:
+--        1. Sales Stage: from interest detection to contract approval.
+--        2. Delivery Stage: from scheduling to fulfillment and validation.
+--    > Since there's no unique identifier linking both stages (especially when customers have multiple products), 
+--      this table establishes a logical connection based on timing rules.
+--    > It also helps to normalize a historically unstructured process, enabling performance benchmarking and operational insights.
  
--- Stage Filter: Reduce processing by limiting the dataset to Sales Stages related to the post-sales product.
+-- • List: Reduces processing by limiting the dataset to Sales Stages related to the post-sales product.
 -- • This sets the base for the entire sales cycle timeline.
 with list as (
     select 
@@ -22,7 +23,7 @@ with list as (
     where stage.type = 'postSales'
 ),
 
--- • This stage filters only customers linked to the product of interest, extracting relevant IDs.
+-- • New Product Leads: Filters only customers linked to the product of interest, extracting relevant IDs.
 --    > Heads-up: one customer may appear multiple times if they’ve acquired the product more than once.
 --    > The unique identifier for each product cycle is `sales_stage_id`.
 newProduct_leads as ( 
@@ -38,30 +39,31 @@ newProduct_leads as (
         and docs.data->>'type' = 'newProduct'
 ),
 
-/*
- • The sales cycle of this new product has 6 milestones distribuided on the Sales and Delivery stages:
-    1. Call Report: when customer express interest in this product.
-    2. Signing: when the product is approved for the customer.
-    3. Scheduling: when the team sets in calendar the delivery.
-    4. Delivery: the actual delivery of the product to the customer.
-    5. Validation: a checklist in order to acomplish a quality level.
-    6. Completion: the last process to end this sales cycle.
- • Due to unstardandization I talked before, milestones 3°, 5° and 6° could have been safe on eather the Sales or Delivery stages, even in both of them for worst scenarios.
- • To avoid duplicated info and starting a standard, the link between stages is defined by three rules:
-    1. The key to match stages is the stage_creation_date: the last Delivery Stage created goes with the last Sales Stage created before the creation of the current delivery stage.
-        * Since the 4° milestone (delivery) is extracted from a distinct table, the logic remains the same: delivery dates between this period goes with this sales cycle.
-    2. Milestones 3°, 5° and 6° are prioritized from Delivery Stage. Only when missing, will they be sought in Sales Stage documentation.
-        * Milestones 1° and 2° only exists in Sales Stage.
-    3. Each milestone is achieved when has its first approval. 
-        * Meaning a bad management (backs and forths with customer, implying re-submission of documents for new approvals) will hit the next SLA on the timeline. 
- 
-  • This path solves for all the scenarios I need:
-    a. Deprecate bad follow up procecess: If there is a sales cycle with multiple sales stages or multiple delivery stages, the etablish logic throws a unique way to track it.
-    b. Visibility on both closed and open cycles: If there is a new process ongoing (only sales stage without a delivery stage created), I could see it too in this single OST.
-    c. Milestones benchmarking: The historical data can be used to uncover patterns and etablishing new goals for a leaner process.
-*/
+----- SALES CYCLE MILESTONE DOCUMENTATION -----
+-- • The sales cycle of this product consists of six milestones, distributed across the two key stages:
+--    1. Call Report – Captures the moment a customer expresses interest in the product.
+--    2. Signing – Marks the formal approval of the product for the customer.
+--    3. Scheduling – Represents when the delivery is scheduled on the calendar.
+--    4. Delivery – Actual handover of the product to the customer.
+--    5. Validation – Quality assurance step, verified via a checklist.
+--    6. Completion – Final step to formally close the sales cycle.
+-- • Due to prior unstandardized record-keeping, milestones 3 (Scheduling), 5 (Validation), and 6 (Completion) may have 
+--   been documented in either or both stages, leading to potential duplication.
 
--- Approvals: For only calling the approved milestones
+----- SALES CYCLE LINKING RULES -----
+-- • To standardize this logic and prevent duplicated records, I apply the following linking rules between Sales and Delivery stages:
+--    1. Stage Matching by Creation Date: Each Delivery Stage is linked to the most recent Sales Stage created before it.
+--        > Logic extended for the 4th milestone (Delivery) which is pulled in a different stage: 
+--          all deliveries within the date range between Sales and Delivery stages are matched accordingly.
+--    2. Milestone Source Priority: Milestones 3, 5, and 6 are first sought in the Delivery Stage. If not found, we fall back to the Sales Stage.
+--        > Milestones 1 and 2 only exist in the Sales Stage.
+--    3. Milestone Achievement Criteria: A milestone is marked as achieved upon its first approval.
+--        > Re-submissions due to poor process management will affect SLA measurement by pushing the next milestone's expected timeline.
+
+----- WHY THIS APPROACH WORKS -----
+-- • Handles Process Inconsistencies: Even if a sales cycle has multiple Sales or Delivery stages, the logic ensures a single, reliable record for tracking.
+-- • Covers All Lifecycle States: Ongoing cycles (Sales stage created but Delivery not yet) are also visible in this unified OST logic.
+-- • Supports Continuous Improvement: Clean historical data allows for milestone benchmarking and identifying opportunities to streamline the process.
 
 -- Approvals: Captures the approval timestamp for documents, used to mark when milestones are reached.
 -- • Only the first approval per document is considered.
@@ -75,7 +77,7 @@ approvals as (
     group by 1
 ),
 
--- Sales Milestones: Looking for the 1° and 2° milestone. Exploring for the 3°, 5° and 6° milestones, just in case they were documented in this stage.
+-- Sales Milestones: Gathers all the document-based milestones available within the Sales Stage.
 sales_milestones as (
     select
         newProduct_leads.sales_stage_id,
@@ -104,7 +106,8 @@ sales_milestones as (
     group by 1, 10
 ),
  
--- Delivery Milestones: Looking for the 3°, 5° and 6° milestones. Also including a termination milestone for informative purposes only.
+-- Delivery Milestones: Retrieves later-stage milestones from Delivery Stage documents. 
+-- • Also including a termination milestone for informative purposes only.
 delivery_milestones as (
     /*
      • As I said before, the macro_id from newProduct_leads table may contains duplicated values:
@@ -143,7 +146,8 @@ delivery_milestones as (
  • Following an advice from my manager, I decided to include both attributes for reference only: new_proposal_attributes (from sales_milestones) and design_attributes (construction below)
 */
 
--- Original Attributes: To set the point of comparison at assesing the change in customer needs.
+-- Previous Attributes: Captures the original specs before the new product was acquired. 
+-- • Useful to measure change in customer needs.
 previous_attributes as (
     -- Distinct on needed since the Project History receives one log every time the billing status changes. I am looking for just one record per project_id.
     select distinct on (project_history.project_id)
@@ -156,7 +160,7 @@ previous_attributes as (
     order by project_history.project_id, project_history.created_at desc
 ),
 
--- Design Attributes: Calling out the new attributes to calculate the change in customer needs.
+-- Design Attributes: Final product specs after delivery, used to assess how much customer needs evolved.
 design_attributes as (
     select 
         newProduct_leads.sales_stage_id,
@@ -175,6 +179,10 @@ design_attributes as (
     > The relation between sales and delivery stage is build by their creation dates. The deliveries scheduled within this period will be linked to this sales cycle. 
     > The change on customer needs are measured from the comparison between the original product and the designed project (instead of the signed specifications from the contract)
 */
+-- Final Output: Returns one row per product cycle with all key milestones and reference attributes.
+-- • Prioritizes delivery data over sales when duplicated.
+-- • Uses creation date matching logic to link Sales and Delivery stages.
+-- • Includes both original and final system specs to support behavioral analytics.
 select distinct on (newProduct_leads.sales_stage_id)
     newProduct_leads.main_id,
     newProduct_leads.project_id,
