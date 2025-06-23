@@ -11,7 +11,7 @@
 --      this table establishes a logical connection based on timing rules.
 --    > It also helps to normalize a historically unstructured process, enabling performance benchmarking and operational insights.
  
---List: Reduces processing by limiting the dataset to Sales Stages related to the post-sales product.
+--List: Sales stage filtering, reduces processing by limiting the dataset to Sales Stages related to the post-sales product.
 -- • This sets the base for the entire sales cycle timeline.
 with list as (
     select 
@@ -47,8 +47,8 @@ newProduct_leads as (
 --    4. Delivery – Actual handover of the product to the customer.
 --    5. Validation – Quality assurance step, verified via a checklist.
 --    6. Completion – Final step to formally close the sales cycle.
--- • Due to prior unstandardized record-keeping, milestones 3 (Scheduling), 5 (Validation), and 6 (Completion) may have 
---   been documented in either or both stages, leading to potential duplication.
+-- • Due to prior unstandardized record-keeping, milestones 3 (Scheduling), 5 (Validation), and 6 (Completion)  
+--   were inconsistently documented across Sales and Delivery stages, often leading to duplication.
 
 ----- SALES CYCLE LINKING RULES -----
 -- • To standardize this logic and prevent duplicated records, I apply the following linking rules between Sales and Delivery stages:
@@ -123,7 +123,7 @@ delivery_milestones as (
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'validation') as new_validation_date,
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'completion') as new_completion_date,
         -- • This is a newly introduced process, so there is no predefined document for the anticipated termination of this specific contract in our CRM.
-        -- • As a workaround, the team is currently creating custom documents on a case-by-case basis to fulfill the documentation need.
+        -- • As a workaround, the team is currently creating custom entries on a case-by-case basis to fulfill the documentation need.
         min(approvals.doc_approved_date) filter (where docs.name = 'Termination') as new_termination_date
     from newProduct_leads
         inner join {{ source('source','stages') }} as delivery_stage on delivery_stage.macro_id = newProduct_leads.macro_id 
@@ -170,7 +170,7 @@ design_attributes as (
             and design.doc_type in ('designAttributes')
 )
 
--- • Main Table: Built based on the declared principles:
+-- Main Table: Built based on the declared principles:
 --    > Use `distinct on` to report a single sales cycle per product: one sales stage matched with one delivery stage.
 --    > Each product is shown as a separate record, resulting in multiple entries per customer.
 --    > Milestones are primarily retrieved from the delivery stage. If unavailable, fallback to the sales stage.
