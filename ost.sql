@@ -1,3 +1,6 @@
+--  This query is inspired by real challenges I have solved in my previous role. 
+-- ⚠️ All have been anonymized to ensure confidentiality.
+
 /*
 New Product OST: This table is a One Source of Truth for tracking the pipeline at different milestones for the Sales Cycle of this New Product.
  • This New Product id offered in Post Sales stages only for applicable customers.
