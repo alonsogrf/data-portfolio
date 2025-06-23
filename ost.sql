@@ -2,17 +2,15 @@
 -- ⚠️ All have been anonymized to ensure confidentiality.
 
 /*
-New Product OST: This table is a One Source of Truth for tracking the pipeline at different milestones for the Sales Cycle of this New Product.
- • This New Product id offered in Post Sales stages only for applicable customers.
- • A single customer may have multiple of these new products, implying each product sold has its own sales cycle in the timeline. I want to show all of them.
- • The Sales Cycle is broken down into two stages: 
-    1. Sales Stage starting at the call report when the need is detected.
-    2. Delivery Stage ending when everything is completed and in production.
-        * My project (pending approval, due to priorities) is the designing a unique 'New Product Sales Cycle' Stage that covers both sales and delivery procecess:
-            1. Avoiding the tricky part of tying a Sales Stage to its Delivery Stage for multi-products customers, knowing there is no key to match one to the another,
-            2. And achieving a streamlined way to track accurate metrics from the sales cycle.
- • In addition, I will explain some workarounds I have taken to clean this up since this it is a process that started as a solution for specific needs of out customers,
-   meaning an unstandardized process with solves-the-need steps thas has evolved over the time.
+
+
+New Product OST: This dataset acts as a One Source of Truth to track each sales cycle of a post-sales product offering.
+• Customers may acquire this product after their initial contract, generating a new sales-delivery flow per product.
+• Each product cycle is structured in two stages:
+    1. Sales Stage: from interest detection to contract approval.
+    2. Delivery Stage: from scheduling to fulfillment and validation.
+• Since there's no unique identifier linking both stages (especially when customers have multiple products), this table establishes a logical connection based on timing rules.
+• It also helps to normalize a historically unstructured process, enabling performance benchmarking and operational insights.
 */
 
 -- List: Narrowed down the dataset by selecting only leads on the stage of interest.
