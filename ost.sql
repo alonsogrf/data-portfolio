@@ -229,3 +229,10 @@ from newProduct_leads
         and (coalesce(delivery_milestones.new_validation_date, sales_milestones.new_validation_date) is null
         or deliveries.start_time < coalesce(delivery_milestones.new_validation_date, sales_milestones.new_validation_date))
 order by newProduct_leads.sales_stage_id, delivery_creation_date asc, deliveries.start_time asc
+
+----- NEXT STEPS -----
+-- My proposed project (pending approval due to prioritization) involves designing a unified New Product Sales Cycle Stage 
+-- that integrates both Sales and Delivery processes, aiming to:
+--    a. Eliminate the complexity of linking Sales and Delivery Stages for multi-product customers, given there's no 
+--       reliable key to match them.
+--    b. Enable a streamlined, consistent framework for tracking accurate metrics across the full sales cycle.
