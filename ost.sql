@@ -1,20 +1,17 @@
---  This query is inspired by real challenges I have solved in my previous role. 
+-- This query is inspired by real challenges I have solved in my previous role. 
 -- ⚠️ All have been anonymized to ensure confidentiality.
 
-/*
+-- New Product OST: This dataset acts as a One Source of Truth to track each sales cycle of a post-sales product offering.
+-- • Customers may acquire this product after their initial contract, generating a new sales-delivery flow per product.
+-- • Each product cycle is structured in two stages:
+--    1. Sales Stage: from interest detection to contract approval.
+--    2. Delivery Stage: from scheduling to fulfillment and validation.
+-- • Since there's no unique identifier linking both stages (especially when customers have multiple products), 
+--   this table establishes a logical connection based on timing rules.
+-- • It also helps to normalize a historically unstructured process, enabling performance benchmarking and operational insights.
 
-
-New Product OST: This dataset acts as a One Source of Truth to track each sales cycle of a post-sales product offering.
-• Customers may acquire this product after their initial contract, generating a new sales-delivery flow per product.
-• Each product cycle is structured in two stages:
-    1. Sales Stage: from interest detection to contract approval.
-    2. Delivery Stage: from scheduling to fulfillment and validation.
-• Since there's no unique identifier linking both stages (especially when customers have multiple products), this table establishes a logical connection based on timing rules.
-• It also helps to normalize a historically unstructured process, enabling performance benchmarking and operational insights.
-*/
-
--- List: Narrowed down the dataset by selecting only leads on the stage of interest.
--- This filtering significantly reduced query time by avoiding unnecessary processing of irrelevant records.
+-- Stage Filter: Reduce processing by limiting the dataset to Sales Stages related to the post-sales product.
+-- • This sets the base for the entire sales cycle timeline.
 with list as (
     select 
         stage.macro_id,
@@ -25,11 +22,9 @@ with list as (
     where stage.type = 'postSales'
 ),
 
-/*
- • New Product Leads: Allow me to work with a specific list of foreing keys to call all the data from relevant tables for only customers of interest.
-    > Heads Up! This list may have multiple duplicated records - as many as the multiple products each customer may have.
-    > The unique ID to identify each sales cycle will be sales_stage_id from list CTE.
-*/
+-- • This stage filters only customers linked to the product of interest, extracting relevant IDs.
+--    > Heads-up: one customer may appear multiple times if they’ve acquired the product more than once.
+--    > The unique identifier for each product cycle is `sales_stage_id`.
 newProduct_leads as ( 
     select
         main.main_id,
@@ -67,6 +62,9 @@ newProduct_leads as (
 */
 
 -- Approvals: For only calling the approved milestones
+
+-- Approvals: Captures the approval timestamp for documents, used to mark when milestones are reached.
+-- • Only the first approval per document is considered.
 approvals as (
     select
         status.doc_id,
