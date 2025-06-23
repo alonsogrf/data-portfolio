@@ -11,21 +11,21 @@
 --      this table establishes a logical connection based on timing rules.
 --    > It also helps to normalize a historically unstructured process, enabling performance benchmarking and operational insights.
  
--- • List: Reduces processing by limiting the dataset to Sales Stages related to the post-sales product.
+--List: Reduces processing by limiting the dataset to Sales Stages related to the post-sales product.
 -- • This sets the base for the entire sales cycle timeline.
 with list as (
     select 
         stage.macro_id,
         stage.stage_id as sales_stage_id,
-        -- Formatting is a custom function that turns the specific "instant in time" to our local time.
+        -- Formatting converts the date to local time using a custom function
         formatting(stage.created_at) as sales_creation_date
     from {{ source('source','stages') }} as stages
     where stage.type = 'postSales'
 ),
 
--- • New Product Leads: Filters only customers linked to the product of interest, extracting relevant IDs.
---    > Heads-up: one customer may appear multiple times if they’ve acquired the product more than once.
---    > The unique identifier for each product cycle is `sales_stage_id`.
+-- New Product Leads: Filters only customers linked to the product of interest, extracting relevant IDs.
+-- • Heads-up: one customer may appear multiple times if they’ve acquired the product more than once.
+-- • The unique identifier for each product cycle is `sales_stage_id`.
 newProduct_leads as ( 
     select
         main.main_id,
@@ -81,9 +81,9 @@ approvals as (
 sales_milestones as (
     select
         newProduct_leads.sales_stage_id,
-        -- I always expect only 1 ProposalId
+        -- Always expects a single ProposalId
         string_agg(trim(docs.data->>'ProposalId'), ', ') as new_proposal_id,
-        -- Just in case there could be more than 1 proposal, I will get the information of the smallest attributes - restriction made from my manager
+        -- In case there’s more than one proposal, retrieve the one with the smallest attributes — manager requirement.
         min(proposal.attributes) as new_proposal_attributes,
         min(docs.status) filter (where docs.doc_type = 'callReport') as new_cReport_current_status,
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'callReport') as new_cReport_date,
@@ -91,12 +91,11 @@ sales_milestones as (
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'schedule') as new_schedule_date,
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'validation') as new_validation_date,
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'completion') as new_completion_date,
-        /*
-        Here I am dealing with incomplete documentation. I assume:
-              a. There is a 100% probability whenever a customer is not interested, the analysts would document the case and mark a 'no' option.
-              b. Whenever we have an interested customer, the team could hop to another part of the process, forgetting about documenting the affirmative interest.
-        That is why whenever there may be an empty space, I will take it as a reafirmation for customer interest.
-        */
+        ----- DEALING WITH INCOMPLETE DOCUMENTATION -----
+        -- Assumption:
+        --    a. A 'no' is always explicitly documented when the customer is not interested.
+        --    b. A 'yes' may be left undocumented if the team moves forward with the process.
+        -- Therefore, any blank entry is treated as an implicit 'yes' (customer is interested).
         coalesce(docs.data->>'customerInterested' != 'no', true) as new_has_interest
     from newProduct_leads
         inner join {{ source('source','docs') }} as docs on docs.stage_id = newProduct_leads.sales_stage_id
@@ -107,14 +106,14 @@ sales_milestones as (
 ),
  
 -- Delivery Milestones: Retrieves later-stage milestones from Delivery Stage documents. 
--- • Also including a termination milestone for informative purposes only.
+-- • Includes a termination milestone for informational purposes only.
 delivery_milestones as (
-    /*
-     • As I said before, the macro_id from newProduct_leads table may contains duplicated values:
-         > One macro_id per customer, displaying as many rows as products the customer have - identifiyng each product by its sales_stage_id
-     • That is the reason behind this distinct on: I will display 1 row for each delivery stage (instead of 1 row for each combination of sales_stage_id vs delivery_stage_id)
-         > The Order By is in charge of linking the last sales_stage_id (before de creation of the delivery_stage_id) only to its unique delivery_stage_id
-    */
+--   • As mentioned earlier, the `macro_id` in the `newProduct_leads` table may appear multiple times:
+--      > Each `macro_id` represents a customer and repeats for every product they have, identified by its unique `sales_stage_id`.
+--   • That's why this `distinct on` is used: to ensure only one row per `delivery_stage_id` is shown.
+--      > Instead of one row per sales_stage_id × delivery_stage_id pair
+--   • The `order by` clause ensures that the most recent `sales_stage_id` (created before the `delivery_stage_id`)
+--     is the one linked to that unique `delivery_stage_id`.
     select distinct on (delivery_stage.stage_id)
         delivery_stage.stage_id as delivery_stage_id,
         formatting(delivery_stage.created_at) as delivery_creation_date,
@@ -123,8 +122,8 @@ delivery_milestones as (
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'schedule') as new_schedule_date,
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'validation') as new_validation_date,
         min(approvals.doc_approved_date) filter (where docs.doc_type = 'completion') as new_completion_date,
-        -- Since this is a new process, the document for the anticipated termination of this specific contract does not even exists in our CRM.
-        -- The team is currently using this workaround to document a termination: creating custom documents on demand - just for covering the need.
+        -- • This is a newly introduced process, so there is no predefined document for the anticipated termination of this specific contract in our CRM.
+        -- • As a workaround, the team is currently creating custom documents on a case-by-case basis to fulfill the documentation need.
         min(approvals.doc_approved_date) filter (where docs.name = 'Termination') as new_termination_date
     from newProduct_leads
         inner join {{ source('source','stages') }} as delivery_stage on delivery_stage.macro_id = newProduct_leads.macro_id 
@@ -137,19 +136,19 @@ delivery_milestones as (
     order by delivery_stage.stage_id, newProduct_leads.sales_creation_date desc
 ),
 
-/*
- • For analytical purposes, I want to show trends/patterns on the "kind of customers" that adquiare this new product.
-    > The complete analysis also includes the attributes on the new products adquired - showing out the incremental needs in where customers use to fall.
- • However, when trying to measure this incremental need I face with some discrepancies that force the analysis to measure the attributes from the design of the project:
-    > As a result of outdated attributes by the time of filling the contract, there may be a gap between the attributes at the proposal and attributes from the final product delivered.
-        * This does not affect the customer since all their needs (signed in the contract) will be covered in the design - using the current catalog of products.
- • Following an advice from my manager, I decided to include both attributes for reference only: new_proposal_attributes (from sales_milestones) and design_attributes (construction below)
-*/
+-- • For analytical purposes, this section aims to identify trends in the types of customers acquiring this new product.
+--    > The full analysis includes attributes of the acquired products, highlighting common patterns in customer new needs.
+-- • However, to assess these 'incremental needs', discrepancies must be considered:
+--    > Due to outdated attributes at the time contracts are signed, there may be differences between the attributes in the proposal and those in the final delivered product.
+--        * This does not affect the customer, as all contractual needs are met through the final design using the current product catalog.
+-- • Following my manager’s recommendation, both sets of attributes are included for reference:
+--    > `new_proposal_attributes` (from `sales_milestones`)
+--    > `design_attributes` (constructed below)
+-- • However, only `design_attributes` will be used to measure the evolving customer needs, as it reflects the actual delivered specifications.
 
 -- Previous Attributes: Captures the original specs before the new product was acquired. 
--- • Useful to measure change in customer needs.
 previous_attributes as (
-    -- Distinct on needed since the Project History receives one log every time the billing status changes. I am looking for just one record per project_id.
+    -- • `distinct on` is needed because Project History logs an entry each time the billing status changes. I want to return a single record per `project_id`.
     select distinct on (project_history.project_id)
         project_history.project_id,
         project_history.contract_id as previous_contract_id,
@@ -164,25 +163,19 @@ previous_attributes as (
 design_attributes as (
     select 
         newProduct_leads.sales_stage_id,
-        -- Numeric processing required to establish the same units as of the original_attributes from previous_attributes CTE.
+        -- Numeric processing required to establish the same units as of the `original_attributes` from `previous_attributes` CTE.
         round((attributes.data->>'someAttributes')::numeric*10000,2) as new_design_attributes
     from newProduct_leads
         inner join {{ source('source','docs') }} as attributes on attributes.stage_id = newProduct_leads.sales_stage_id
             and design.doc_type in ('designAttributes')
 )
 
-/*
- • Finally, to build the main table I retrive the declared principles:
-    > I need a distinct on to only report one sales cycle per product: (almost) each sales stage matching a single delivery stage.
-    > This also means that will be displayed each product: there will be multiple records per customer.
-    > The applicable milestones are going to be retrived from delivery stage when posible. Only if missing, they would be looked up from sales stage.
-    > The relation between sales and delivery stage is build by their creation dates. The deliveries scheduled within this period will be linked to this sales cycle. 
-    > The change on customer needs are measured from the comparison between the original product and the designed project (instead of the signed specifications from the contract)
-*/
--- Final Output: Returns one row per product cycle with all key milestones and reference attributes.
--- • Prioritizes delivery data over sales when duplicated.
--- • Uses creation date matching logic to link Sales and Delivery stages.
--- • Includes both original and final system specs to support behavioral analytics.
+-- • Main Table: Built based on the declared principles:
+--    > Use `distinct on` to report a single sales cycle per product: one sales stage matched with one delivery stage.
+--    > Each product is shown as a separate record, resulting in multiple entries per customer.
+--    > Milestones are primarily retrieved from the delivery stage. If unavailable, fallback to the sales stage.
+--    > The relationship between sales and delivery stages is determined by their creation dates. Deliveries scheduled in this range are linked to the product cycle.
+--    > Customer needs evolution is measured by comparing the original product attributes with the final design — not the signed contract specs.
 select distinct on (newProduct_leads.sales_stage_id)
     newProduct_leads.main_id,
     newProduct_leads.project_id,
