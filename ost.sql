@@ -1,4 +1,4 @@
--- This query is inspired by real challenges I have solved in my previous role. 
+-- This logic is based on real-world challenges I addressed in a previous role. 
 -- ⚠️ All have been anonymized to ensure confidentiality.
 
 ----- NEW PRODUCT OST -----
@@ -11,7 +11,7 @@
 --      this table establishes a logical connection based on timing rules.
 --    > It also helps to normalize a historically unstructured process, enabling performance benchmarking and operational insights.
  
---List: Sales stage filtering, reduces processing by limiting the dataset to Sales Stages related to the post-sales product.
+--List: Sales stage filtering. Reduces processing by limiting to Sales Stages related to this post-sales product.
 -- • This sets the base for the entire sales cycle timeline.
 with list as (
     select 
@@ -24,7 +24,7 @@ with list as (
 ),
 
 -- New Product Leads: Filters only customers linked to the product of interest, extracting relevant IDs.
--- • Heads-up: one customer may appear multiple times if they’ve acquired the product more than once.
+-- • One customer may appear multiple times if they’ve acquired the product more than once.
 -- • The unique identifier for each product cycle is `sales_stage_id`.
 newProduct_leads as ( 
     select
@@ -110,10 +110,10 @@ sales_milestones as (
 delivery_milestones as (
 --   • As mentioned earlier, the `macro_id` in the `newProduct_leads` table may appear multiple times:
 --      > Each `macro_id` represents a customer and repeats for every product they have, identified by its unique `sales_stage_id`.
---   • That's why this `distinct on` is used: to ensure only one row per `delivery_stage_id` is shown.
+--   • That's why this DISTINCT ON is used: to ensure only one row per `delivery_stage_id` is shown.
 --      > Instead of one row per sales_stage_id × delivery_stage_id pair
---   • The `order by` clause ensures that the most recent `sales_stage_id` (created before the `delivery_stage_id`)
---     is the one linked to that unique `delivery_stage_id`.
+--   • The ORDER BY clause ensures that the most recent `sales_stage_id` (prior to `delivery_stage_id`) is the one linked to
+--     that unique `delivery_stage_id`.
     select distinct on (delivery_stage.stage_id)
         delivery_stage.stage_id as delivery_stage_id,
         formatting(delivery_stage.created_at) as delivery_creation_date,
@@ -148,7 +148,7 @@ delivery_milestones as (
 
 -- Previous Attributes: Captures the original specs before the new product was acquired. 
 previous_attributes as (
-    -- • `distinct on` is needed because Project History logs an entry each time the billing status changes. I want to return a single record per `project_id`.
+    -- • DISTINCT ON is needed because Project History logs an entry each time the billing status changes. I want to return a single record per `project_id`.
     select distinct on (project_history.project_id)
         project_history.project_id,
         project_history.contract_id as previous_contract_id,
@@ -163,7 +163,7 @@ previous_attributes as (
 design_attributes as (
     select 
         newProduct_leads.sales_stage_id,
-        -- Numeric processing required to establish the same units as of the `original_attributes` from `previous_attributes` CTE.
+        -- Numeric processing ensures unit consistency with `original_attributes` from `previous_attributes` CTE.
         round((attributes.data->>'someAttributes')::numeric*10000,2) as new_design_attributes
     from newProduct_leads
         inner join {{ source('source','docs') }} as attributes on attributes.stage_id = newProduct_leads.sales_stage_id
@@ -171,7 +171,7 @@ design_attributes as (
 )
 
 -- Main Table: Built based on the declared principles:
---    > Use `distinct on` to report a single sales cycle per product: one sales stage matched with one delivery stage.
+--    > Use DISTINCT ON to report a single sales cycle per product: one sales stage matched with one delivery stage.
 --    > Each product is shown as a separate record, resulting in multiple entries per customer.
 --    > Milestones are primarily retrieved from the delivery stage. If unavailable, fallback to the sales stage.
 --    > The relationship between sales and delivery stages is determined by their creation dates. Deliveries scheduled in this range are linked to the product cycle.
